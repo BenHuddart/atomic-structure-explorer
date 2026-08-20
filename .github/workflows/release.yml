@@ -1,0 +1,135 @@
+name: Release desktop applications
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows x64
+            artifact: windows-x64
+            icon: build/icons/app-icon.ico
+          - os: macos-latest
+            label: macOS arm64
+            artifact: macos-arm64
+            icon: build/icons/app-icon.icns
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install project and release tools
+        run: python -m pip install ".[dev,release]"
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest
+      - name: Remove test-only packages before bundling
+        run: python -m pip uninstall -y pytest pytest-qt
+      - name: Generate platform icon files
+        run: python scripts/build_icon_assets.py
+      - name: Build application
+        run: >-
+          python -m PyInstaller
+          --noconfirm
+          --clean
+          --windowed
+          --onedir
+          --name AtomicStructureExplorer
+          --collect-data atomic_structure_explorer
+          --exclude-module pytest
+          --icon ${{ matrix.icon }}
+          main.py
+      - name: Smoke-test Windows application
+        if: runner.os == 'Windows'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        shell: pwsh
+        run: dist/AtomicStructureExplorer/AtomicStructureExplorer.exe --smoke-test
+      - name: Smoke-test macOS application
+        if: runner.os == 'macOS'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        shell: bash
+        run: dist/AtomicStructureExplorer.app/Contents/MacOS/AtomicStructureExplorer --smoke-test
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          $compiler = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
+          if (-not $compiler) {
+            $compiler = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path -LiteralPath $compiler)) {
+            throw "Inno Setup compiler not found: $compiler"
+          }
+          & $compiler "/DAppVersion=$version" "deployment\windows\installer.iss"
+      - name: Build and verify macOS disk image
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p release
+          mkdir -p dmg-root
+          ditto dist/AtomicStructureExplorer.app dmg-root/AtomicStructureExplorer.app
+          ln -s /Applications dmg-root/Applications
+          hdiutil create \
+            -volname "Atomic Structure Explorer" \
+            -srcfolder dmg-root \
+            -ov \
+            -format UDZO \
+            release/AtomicStructureExplorer-macOS-arm64.dmg
+          hdiutil verify release/AtomicStructureExplorer-macOS-arm64.dmg
+      - name: Upload packaged application
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: release/*
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          else
+            gh release create "$RELEASE_TAG" release-assets/* --verify-tag --generate-notes
+          fi
+      - name: Delete temporary workflow artifacts
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" \
+            --jq '.artifacts[].id' | while read -r artifact_id; do
+              gh api --method DELETE "/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
+            done

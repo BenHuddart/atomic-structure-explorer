@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "description": "Reference-data registry for Atomic Structure Explorer",
+  "policy": "Only sources with verified free redistribution rights may be added to packaged records.",
+  "datasets": [],
+  "notes": [
+    "Calculated values are never calibrated to reference data.",
+    "Reference values are optional overlays and retain source, version, uncertainty, and licence metadata."
+  ]
+}
