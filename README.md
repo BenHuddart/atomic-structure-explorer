@@ -1,4 +1,4 @@
-# atomic_structure_explorer
+# Atomic Structure Explorer
 
 <p align="center">
   <img src="src/atomic_structure_explorer/assets/app-icon.png" alt="Atomic Structure Explorer icon" width="180">
